@@ -1,0 +1,210 @@
+(ns coroutine
+  (:refer-clojure :exclude [sync])
+  (:import [org.graalvm.continuations Continuation ContinuationEntryPoint SuspendCapability]))
+
+(definterface IPumpable
+  (resume [v])
+  (getOut [])
+  (^boolean isFinished []))
+
+(definterface ICoroutine
+  (suspend [v])
+  (resume [v])
+  (getIn [])
+  (setIn [v])
+  (getOut [])
+  (setOut [v])
+  (getCap [])
+  (setCap [c])
+  (getCont ^Continuation [])
+  (setCont [c])
+  (^boolean isFinished []))
+
+(def ^:private -active (object-array 1))
+
+(deftype Coroutine [^:unsynchronized-mutable in-val
+                    ^:unsynchronized-mutable out-val
+                    ^:unsynchronized-mutable ^SuspendCapability cap
+                    ^:unsynchronized-mutable ^Continuation cont]
+  IPumpable
+  ICoroutine
+  (getIn [_] in-val)
+  (setIn [_ v] (set! in-val v))
+  (getOut [_] out-val)
+  (setOut [_ v] (set! out-val v))
+  (getCap [_] cap)
+  (setCap [_ c] (set! cap c))
+  (getCont [_] cont)
+  (setCont [_ c] (set! cont c))
+  (isFinished [_] (not (.isResumable cont)))
+  (suspend [this v]
+    (set! out-val v)
+    (.suspend cap)
+    in-val)
+  (resume [this v]
+    (set! in-val v)
+    (aset ^objects -active 0 this)
+    (.resume cont)
+    out-val))
+
+(defn yield
+  "Yields a value from inside a coroutine. Suspends execution and returns
+   the value passed to the next call to next!."
+  [v]
+  (.suspend ^ICoroutine (aget ^objects -active 0) v))
+
+(defn coroutine
+  "Returns a coroutine generator from a function f. Call the generator with
+   arguments to create a coroutine instance. f may call yield to suspend
+   and produce values. The return value of f becomes the final value.
+
+   (def co-gen (coroutine (fn [x] (yield x) (yield (* x 2)))))
+   (def co (co-gen 5))
+   (next! co)      ;=> 5
+   (next! co)      ;=> 10
+   (finished? co)  ;=> false
+   (next! co)      ;=> 10  (return value of last yield)
+   (finished? co)  ;=> true"
+  [f]
+  (fn [& args]
+    (let [^ICoroutine co (Coroutine. nil nil nil nil)
+          cont (Continuation/create
+                 (fn [cap]
+                   (.setCap co cap)
+                   (aset ^objects -active 0 co)
+                   (.setOut co (apply f args))))]
+      (.setCont co cont)
+      co)))
+
+(defn next!
+  "Resumes the coroutine, passing val as the return value of yield (or as the
+   argument to f on the first call). Returns the yielded or final value.
+   After the coroutine finishes, always returns the last value."
+  ([co] (next! co nil))
+  ([co val]
+   (let [^IPumpable co co]
+     (if (.isFinished co)
+       (.getOut co)
+       (.resume co val)))))
+
+(defn finished?
+  "Returns true if the coroutine has completed."
+  [co]
+  (.isFinished ^IPumpable co))
+
+(deftype Race [instances
+               ^:unsynchronized-mutable result
+               ^:unsynchronized-mutable done]
+  IPumpable
+  (isFinished [_] done)
+  (getOut [_] result)
+  (resume [_ v]
+    (let [n (count instances)]
+      (loop [i 0, acc (transient [])]
+        (if (>= i n)
+          (let [r (persistent! acc)]
+            (set! result r) r)
+          (let [co  (nth instances i)
+                val (next! co)]
+            (if (finished? co)
+              (let [r (persistent! (conj! acc val))]
+                (set! result r)
+                (set! done true)
+                r)
+              (recur (inc i) (conj! acc val)))))))))
+
+(defn race
+  "Takes coroutine generators and returns a race. Each next! call pumps all
+   coroutines sequentially, collecting results into a vector. The race finishes
+   as soon as any coroutine finishes — remaining coroutines are not pumped."
+  [& generators]
+  (let [instances (mapv #(%) generators)]
+    (Race. instances nil false)))
+
+(deftype Sync [instances
+               ^objects arr
+               ^:unsynchronized-mutable remaining
+               ^:unsynchronized-mutable done]
+  IPumpable
+  (isFinished [_] done)
+  (getOut [_] (vec arr))
+  (resume [_ v]
+    (dotimes [i (alength arr)]
+      (let [co (nth instances i)]
+        (when-not (finished? co)
+          (let [val (next! co)]
+            (if (finished? co)
+              (do (set! remaining (dec remaining))
+                  (when-not (nil? val)
+                    (aset arr i val)))
+              (aset arr i val))))))
+    (when (zero? remaining)
+      (set! done true))
+    (vec arr)))
+
+(defn sync
+  "Takes coroutine generators and returns a sync. Each next! call pumps all
+   coroutines sequentially, collecting results into a vector. The sync finishes
+   only when ALL coroutines have finished. Finished coroutines hold their last
+   non-nil value."
+  [& generators]
+  (let [instances (mapv #(%) generators)]
+    (Sync. instances (object-array (count instances)) (count instances) false)))
+
+(defmacro defco
+  "Defines a coroutine generator. (defco name [args] body) expands to
+   (def name (coroutine (fn [args] body)))"
+  [name args & body]
+  `(def ~name (coroutine (fn ~args ~@body))))
+
+(defn- find-args
+  "Walks a form and returns the set of %, %1, %2, ... %& symbols."
+  [form]
+  (cond
+    (and (symbol? form)
+         (re-matches #"%(&|\d*)?" (name form))) #{form}
+    (coll? form) (apply clojure.set/union #{} (map find-args form))
+    :else #{}))
+
+(defn- arg-sym->index [s]
+  (let [n (name s)]
+    (cond
+      (= n "%")  1
+      (= n "%&") -1
+      :else      (parse-long (subs n 1)))))
+
+(defn- build-params [arg-syms]
+  (let [indexed (remove #(= -1 %) (map arg-sym->index arg-syms))
+        max-n   (if (seq indexed) (apply max indexed) 0)
+        params  (mapv #(symbol (str "__gen" %)) (range 1 (inc max-n)))]
+    (if (some #(= '%& %) arg-syms)
+      (conj params '& (symbol "__gen&"))
+      params)))
+
+(defn- replace-args [form params has-rest?]
+  (let [positional   (vec (remove #{'&} params))
+        replacements (into {'% (first positional)}
+                       (map-indexed
+                         (fn [i p]
+                           [(symbol (str "%" (inc i))) p])
+                         positional))
+        replacements (if has-rest?
+                       (assoc replacements '%& (symbol "__gen&"))
+                       replacements)]
+    (clojure.walk/postwalk
+      (fn [x]
+        (if (and (symbol? x) (contains? replacements x))
+          (get replacements x)
+          x))
+      form)))
+
+(defmacro co*
+  "Coroutine shorthand using % args, like #() for anonymous fns.
+   (co* (yield %))          => (coroutine (fn [__gen1] (yield __gen1)))
+   (co* (+ (yield %1) %2))  => (coroutine (fn [__gen1 __gen2] (+ (yield __gen1) __gen2)))"
+  [& body]
+  (let [arg-syms  (find-args body)
+        has-rest? (contains? arg-syms '%&)
+        params    (build-params arg-syms)
+        body      (replace-args body params has-rest?)]
+    `(coroutine (fn ~params ~@body))))
