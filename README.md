@@ -34,8 +34,11 @@ This resolves the classpath via `clj`, then boots the Espresso JVM with continua
 
 ### Coroutines
 
+`coroutine` returns a generator — a function that creates a new coroutine instance each time it's called:
+
 ```clojure
-(def co ((coroutine (fn [x] (return x) (return (* x 2)) (* x 3))) 5))
+(def co-gen (coroutine (fn [x] (return x) (return (* x 2)) (* x 3))))
+(def co (co-gen 5))
 (co)           ;=> 5
 (co)           ;=> 10
 (co)           ;=> 15
