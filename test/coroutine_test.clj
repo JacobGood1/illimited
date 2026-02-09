@@ -1,7 +1,7 @@
 (ns coroutine-test
   (:refer-clojure :exclude [sync])
   (:require [clojure.test :refer [deftest is testing]]
-            [coroutine :refer [coroutine yield finished? race sync]]))
+            [coroutine :refer [coroutine return return-final finished? race sync]]))
 
 (deftest generator-returns-fn
   (is (fn? (coroutine (fn [x] x)))))
@@ -19,7 +19,7 @@
     (is (finished? co))))
 
 (deftest single-yield
-  (let [co-gen (coroutine (fn [x] (yield x) :done))
+  (let [co-gen (coroutine (fn [x] (return x) :done))
         co     (co-gen 42)]
     (is (not (finished? co)))
     (is (= 42 (co)))
@@ -29,8 +29,8 @@
 
 (deftest multiple-yields
   (let [co-gen (coroutine (fn [x]
-                            (yield x)
-                            (yield (* x 2))
+                            (return x)
+                            (return (* x 2))
                             (* x 3)))
         co     (co-gen 5)]
     (is (= 5 (co)))
@@ -40,9 +40,9 @@
 
 (deftest yield-different-types
   (let [co-gen (coroutine (fn []
-                            (yield :keyword)
-                            (yield "string")
-                            (yield [1 2 3])
+                            (return :keyword)
+                            (return "string")
+                            (return [1 2 3])
                             {:a 1}))
         co     (co-gen)]
     (is (= :keyword (co)))
@@ -52,13 +52,13 @@
     (is (finished? co))))
 
 (deftest yield-nil
-  (let [co-gen (coroutine (fn [] (yield nil) :done))
+  (let [co-gen (coroutine (fn [] (return nil) :done))
         co     (co-gen)]
     (is (nil? (co)))
     (is (= :done (co)))))
 
 (deftest finished-returns-last-value
-  (let [co-gen (coroutine (fn [] (yield 1) :final))
+  (let [co-gen (coroutine (fn [] (return 1) :final))
         co     (co-gen)]
     (co)
     (co)
@@ -69,8 +69,8 @@
 (deftest send-value-into-coroutine
   (testing "calling with a value becomes the return of yield"
     (let [co-gen (coroutine (fn []
-                              (let [v (yield :ready)]
-                                (yield v)
+                              (let [v (return :ready)]
+                                (return v)
                                 :done)))
           co     (co-gen)]
       (is (= :ready (co 99)))    ; returns current :ready, sends 99 → v=99
@@ -81,8 +81,8 @@
 
 (deftest ping-pong
   (let [co-gen (coroutine (fn []
-                            (let [a (yield 1)
-                                  b (yield (+ a 10))]
+                            (let [a (return 1)
+                                  b (return (+ a 10))]
                               (+ b 100))))
         co     (co-gen)]
     (is (= 1 (co 2)))         ; returns 1, sends 2 → a=2
@@ -92,7 +92,7 @@
     (is (finished? co))))
 
 (deftest zero-arg-generator
-  (let [co-gen (coroutine (fn [] (yield :a) (yield :b) :c))
+  (let [co-gen (coroutine (fn [] (return :a) (return :b) :c))
         co     (co-gen)]
     (is (= :a (co)))
     (is (= :b (co)))
@@ -100,7 +100,7 @@
 
 (deftest independent-instances
   (testing "two instances from the same generator are independent"
-    (let [co-gen (coroutine (fn [x] (yield x) (yield (* x 2))))
+    (let [co-gen (coroutine (fn [x] (return x) (return (* x 2))))
           co1    (co-gen 10)
           co2    (co-gen 20)]
       (is (= 10 (co1)))
@@ -111,7 +111,7 @@
 (deftest accumulator
   (let [co-gen (coroutine (fn []
                             (loop [sum 0]
-                              (let [v (yield sum)]
+                              (let [v (return sum)]
                                 (if (= v :stop)
                                   sum
                                   (recur (+ sum v)))))))
@@ -124,7 +124,7 @@
 (deftest many-yields
   (let [co-gen (coroutine (fn [n]
                             (dotimes [i n]
-                              (yield i))
+                              (return i))
                             :done))
         co     (co-gen 5)]
     (is (= [0 1 2 3 4 :done]
@@ -133,16 +133,16 @@
 
 (deftest race-basic
   (testing "collects yields from all coroutines each round"
-    (let [co1 (coroutine (fn [] (yield :a) (yield :b) :done1))
-          co2 (coroutine (fn [] (yield :x) (yield :y) :done2))
+    (let [co1 (coroutine (fn [] (return :a) (return :b) :done1))
+          co2 (coroutine (fn [] (return :x) (return :y) :done2))
           r   (race co1 co2)]
       (is (= [:a :x] (r)))
       (is (= [:b :y] (r)))
       (is (not (finished? r)))))
 
   (testing "race finishes when any coroutine finishes"
-    (let [co1 (coroutine (fn [] (while true (yield 1))))
-          co2 (coroutine (fn [] (yield 1) :done))
+    (let [co1 (coroutine (fn [] (while true (return 1))))
+          co2 (coroutine (fn [] (return 1) :done))
           r   (race co1 co2)]
       (is (= [1 1] (r)))
       (is (not (finished? r)))
@@ -152,9 +152,9 @@
 (deftest race-first-finishes-stops-remaining
   (testing "when first coroutine finishes, later ones are not pumped"
     (let [calls (atom 0)
-          co1   (coroutine (fn [] (yield :a) :done))
-          co2   (coroutine (fn [] (swap! calls inc) (yield :x)
-                                  (swap! calls inc) (yield :y)))
+          co1   (coroutine (fn [] (return :a) :done))
+          co2   (coroutine (fn [] (swap! calls inc) (return :x)
+                                  (swap! calls inc) (return :y)))
           r     (race co1 co2)]
       (is (= [:a :x] (r)))
       (is (= 2 @calls))      ; auto-start ran first swap!, first pump ran second
@@ -165,9 +165,9 @@
 
 (deftest race-last-finishes
   (testing "when the last coroutine finishes, result includes all values"
-    (let [co1 (coroutine (fn [] (while true (yield :a))))
-          co2 (coroutine (fn [] (while true (yield :b))))
-          co3 (coroutine (fn [] (yield :c) :done))
+    (let [co1 (coroutine (fn [] (while true (return :a))))
+          co2 (coroutine (fn [] (while true (return :b))))
+          co3 (coroutine (fn [] (return :c) :done))
           r   (race co1 co2 co3)]
       (is (= [:a :b :c] (r)))
       (is (not (finished? r)))
@@ -177,10 +177,10 @@
 (deftest race-middle-finishes
   (testing "when a middle coroutine finishes, later ones are not pumped"
     (let [calls (atom 0)
-          co1   (coroutine (fn [] (while true (yield :a))))
-          co2   (coroutine (fn [] (yield :b) :done))
-          co3   (coroutine (fn [] (swap! calls inc) (yield :c)
-                                  (swap! calls inc) (yield :d)))
+          co1   (coroutine (fn [] (while true (return :a))))
+          co2   (coroutine (fn [] (return :b) :done))
+          co3   (coroutine (fn [] (swap! calls inc) (return :c)
+                                  (swap! calls inc) (return :d)))
           r     (race co1 co2 co3)]
       (is (= [:a :b :c] (r)))
       (is (= 2 @calls))      ; auto-start ran first swap!, first pump ran second
@@ -192,14 +192,14 @@
 (deftest race-immediate-finish
   (testing "coroutine that returns without yielding finishes on first pump"
     (let [co1 (coroutine (fn [] :immediate))
-          co2 (coroutine (fn [] (yield :x) :done))
+          co2 (coroutine (fn [] (return :x) :done))
           r   (race co1 co2)]
       (is (= [:immediate] (r)))
       (is (finished? r)))))
 
 (deftest race-finished-returns-cached-result
   (testing "calling a finished race returns the last result repeatedly"
-    (let [co1 (coroutine (fn [] (yield 1) :done))
+    (let [co1 (coroutine (fn [] (return 1) :done))
           r   (race co1)]
       (r)
       (r)
@@ -210,7 +210,7 @@
 
 (deftest race-single-coroutine
   (testing "race with a single coroutine"
-    (let [co (coroutine (fn [] (yield 1) (yield 2) :done))
+    (let [co (coroutine (fn [] (return 1) (return 2) :done))
           r  (race co)]
       (is (= [1] (r)))
       (is (= [2] (r)))
@@ -220,10 +220,10 @@
 
 (deftest race-many-coroutines
   (testing "race with many participants"
-    (let [co1 (coroutine (fn [] (yield :a1) (yield :a2) :a-done))
-          co2 (coroutine (fn [] (yield :b1) (yield :b2) :b-done))
-          co3 (coroutine (fn [] (yield :c1) (yield :c2) :c-done))
-          co4 (coroutine (fn [] (yield :d1) (yield :d2) :d-done))
+    (let [co1 (coroutine (fn [] (return :a1) (return :a2) :a-done))
+          co2 (coroutine (fn [] (return :b1) (return :b2) :b-done))
+          co3 (coroutine (fn [] (return :c1) (return :c2) :c-done))
+          co4 (coroutine (fn [] (return :d1) (return :d2) :d-done))
           r   (race co1 co2 co3 co4)]
       (is (= [:a1 :b1 :c1 :d1] (r)))
       (is (= [:a2 :b2 :c2 :d2] (r)))
@@ -233,8 +233,8 @@
 
 (deftest race-finished?-tracking
   (testing "finished? is false before any coroutine finishes"
-    (let [co1 (coroutine (fn [] (yield 1) (yield 2) :done))
-          co2 (coroutine (fn [] (yield 3) (yield 4) :done))
+    (let [co1 (coroutine (fn [] (return 1) (return 2) :done))
+          co2 (coroutine (fn [] (return 3) (return 4) :done))
           r   (race co1 co2)]
       (is (not (finished? r)))
       (r)
@@ -245,8 +245,8 @@
       (is (finished? r)))))
 
 (deftest sync-generic-test
-  (let [co1 (coroutine (fn [] (yield 1)))
-        co2 (coroutine (fn [] (yield 3) (yield 4) :done))
+  (let [co1 (coroutine (fn [] (return 1)))
+        co2 (coroutine (fn [] (return 3) (return 4) :done))
         s   (sync co1 co2)]
     (is (= [1 3] (s)))
     (is (not (finished? s)))
@@ -257,7 +257,7 @@
 
 (deftest sync-single-coroutine
   (testing "sync with one coroutine behaves like calling the coroutine"
-    (let [co (coroutine (fn [] (yield :a) (yield :b) :done))
+    (let [co (coroutine (fn [] (return :a) (return :b) :done))
           s  (sync co)]
       (is (= [:a] (s)))
       (is (= [:b] (s)))
@@ -267,9 +267,9 @@
 
 (deftest sync-all-same-length
   (testing "all coroutines finish on the same round"
-    (let [co1 (coroutine (fn [] (yield 1) :a))
-          co2 (coroutine (fn [] (yield 2) :b))
-          co3 (coroutine (fn [] (yield 3) :c))
+    (let [co1 (coroutine (fn [] (return 1) :a))
+          co2 (coroutine (fn [] (return 2) :b))
+          co3 (coroutine (fn [] (return 3) :c))
           s   (sync co1 co2 co3)]
       (is (= [1 2 3] (s)))
       (is (not (finished? s)))
@@ -278,11 +278,11 @@
 
 (deftest sync-early-finisher-holds-value
   (testing "coroutine that finishes early holds its last yielded value"
-    (let [co1 (coroutine (fn [] (yield :x)))
-          co2 (coroutine (fn [] (yield :a) (yield :b) (yield :c) :done))
+    (let [co1 (coroutine (fn [] (return :x)))
+          co2 (coroutine (fn [] (return :a) (return :b) (return :c) :done))
           s   (sync co1 co2)]
       (is (= [:x :a] (s)))
-      ;; co1 finishes here (returns nil), value stays :x
+      ;; co1 finishes here (return s nil), value stays :x
       (is (= [:x :b] (s)))
       (is (not (finished? s)))
       (is (= [:x :c] (s)))
@@ -292,9 +292,9 @@
 
 (deftest sync-multiple-early-finishers
   (testing "multiple coroutines finish at different times"
-    (let [co1 (coroutine (fn [] (yield 1)))
-          co2 (coroutine (fn [] (yield 2) (yield 22)))
-          co3 (coroutine (fn [] (yield 3) (yield 33) (yield 333) :end))
+    (let [co1 (coroutine (fn [] (return 1)))
+          co2 (coroutine (fn [] (return 2) (return 22)))
+          co3 (coroutine (fn [] (return 3) (return 33) (return 333) :end))
           s   (sync co1 co2 co3)]
       (is (= [1 2 3] (s)))
       ;; co1 finishes
@@ -308,7 +308,7 @@
 
 (deftest sync-finished-returns-cached-result
   (testing "calling a finished sync returns the last result"
-    (let [co1 (coroutine (fn [] (yield 1) :done))
+    (let [co1 (coroutine (fn [] (return 1) :done))
           s   (sync co1)]
       (s)
       (s)
@@ -318,8 +318,8 @@
 
 (deftest sync-finished?-tracking
   (testing "finished? transitions correctly"
-    (let [co1 (coroutine (fn [] (yield 1) :a))
-          co2 (coroutine (fn [] (yield 2) :b))
+    (let [co1 (coroutine (fn [] (return 1) :a))
+          co2 (coroutine (fn [] (return 2) :b))
           s   (sync co1 co2)]
       (is (not (finished? s)))
       (s)
@@ -330,7 +330,7 @@
 (deftest sync-immediate-finish
   (testing "coroutine that returns without yielding"
     (let [co1 (coroutine (fn [] :immediate))
-          co2 (coroutine (fn [] (yield :a) :done))
+          co2 (coroutine (fn [] (return :a) :done))
           s   (sync co1 co2)]
       ;; co1 finishes immediately with :immediate, co2 yields :a
       (is (= [:immediate :a] (s)))
@@ -340,10 +340,10 @@
 
 (deftest sync-many-coroutines
   (testing "sync with many participants"
-    (let [co1 (coroutine (fn [] (yield :a1) (yield :a2) :a))
-          co2 (coroutine (fn [] (yield :b1) (yield :b2) :b))
-          co3 (coroutine (fn [] (yield :c1) (yield :c2) :c))
-          co4 (coroutine (fn [] (yield :d1) (yield :d2) :d))
+    (let [co1 (coroutine (fn [] (return :a1) (return :a2) :a))
+          co2 (coroutine (fn [] (return :b1) (return :b2) :b))
+          co3 (coroutine (fn [] (return :c1) (return :c2) :c))
+          co4 (coroutine (fn [] (return :d1) (return :d2) :d))
           s   (sync co1 co2 co3 co4)]
       (is (= [:a1 :b1 :c1 :d1] (s)))
       (is (= [:a2 :b2 :c2 :d2] (s)))
@@ -354,15 +354,15 @@
 (deftest sync-does-not-pump-finished-coroutines
   (testing "finished coroutines are not pumped again"
     (let [calls (atom 0)
-          co1   (coroutine (fn [] (yield (swap! calls inc))
-                                  (yield (swap! calls inc))))
-          co2   (coroutine (fn [] (yield :x) (yield :y) (yield :z) :done))
+          co1   (coroutine (fn [] (return (swap! calls inc))
+                                  (return (swap! calls inc))))
+          co2   (coroutine (fn [] (return :x) (return :y) (return :z) :done))
           s     (sync co1 co2)]
       (s)
       (is (= 2 @calls))      ; auto-start ran first swap!, first pump ran second
       (s)
       (is (= 2 @calls))
-      ;; co1 finishes here (returns nil), co2 still going
+      ;; co1 finishes here (return s nil), co2 still going
       (s)
       (is (= 2 @calls))
       ;; co1 should still not be pumped
@@ -371,7 +371,7 @@
 
 (deftest sync-explicit-return-value-used
   (testing "non-nil return value appears in results on finishing round"
-    (let [co1 (coroutine (fn [] (yield 1) (yield 2) :final))
+    (let [co1 (coroutine (fn [] (return 1) (return 2) :final))
           s   (sync co1)]
       (is (= [1] (s)))
       (is (= [2] (s)))
@@ -382,8 +382,8 @@
   (testing "coroutines on different threads do not interfere"
     (let [results (pmap (fn [x]
                           (let [co-gen (coroutine (fn [n]
-                                                    (yield n)
-                                                    (yield (* n 2))
+                                                    (return n)
+                                                    (return (* n 2))
                                                     (* n 3)))
                                 co     (co-gen x)]
                             [(co) (co) (co)]))
@@ -393,7 +393,37 @@
         (is (= (* x 2) b))
         (is (= (* x 3) c))))))
 
+(deftest return-final-terminates-immediately
+  (testing "return-final sets permanent value and marks finished"
+    (let [co-gen (coroutine (fn []
+                              (return 1)
+                              (return-final 42)
+                              (return 2)
+                              :never-reached))
+          co     (co-gen)]
+      (is (= 1 (co)))           ; returns 1, advance hits return-final → done
+      (is (finished? co))
+      (is (= 42 (co)))           ; permanent value
+      (is (= 42 (co))))))        ; still 42
 
+(deftest return-final-without-prior-yields
+  (testing "return-final as first action"
+    (let [co-gen (coroutine (fn [] (return-final :instant)))
+          co     (co-gen)]
+      (is (= :instant (co)))
+      (is (finished? co))
+      (is (= :instant (co))))))
+
+(deftest return-final-with-send-value
+  (testing "return-final based on received value"
+    (let [co-gen (coroutine (fn []
+                              (let [v (return :waiting)]
+                                (return-final (* v 10)))))
+          co     (co-gen)]
+      (is (= :waiting (co 5)))    ; sends 5, returns :waiting
+      (is (= 50 (co)))            ; return-final set 50
+      (is (finished? co))
+      (is (= 50 (co))))))
 
 
 
