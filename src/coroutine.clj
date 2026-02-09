@@ -22,7 +22,9 @@
   (getCont ^Continuation [])
   (setCont [c])
   (^boolean isFinished [])
-  (markDone []))
+  (markDone [])
+  (getWaitUntil [])
+  (setWaitUntil [t]))
 
 (def ^:private ^ThreadLocal -active (ThreadLocal.))
 
@@ -30,7 +32,8 @@
                     ^:unsynchronized-mutable out-val
                     ^:unsynchronized-mutable ^SuspendCapability cap
                     ^:unsynchronized-mutable ^Continuation cont
-                    ^:unsynchronized-mutable done]
+                    ^:unsynchronized-mutable done
+                    ^:unsynchronized-mutable wait-until]
   IPumpable
   ICoroutine
   (getIn [_] in-val)
@@ -43,6 +46,8 @@
   (setCont [_ c] (set! cont c))
   (isFinished [_] done)
   (markDone [_] (set! done true))
+  (getWaitUntil [_] wait-until)
+  (setWaitUntil [_ t] (set! wait-until t))
   (suspend [this v]
     (set! out-val v)
     (.suspend cap)
@@ -56,27 +61,61 @@
   (invoke [this]
     (if done
       out-val
-      (let [current out-val]
-        (if (.isResumable cont)
-          (do (.resume this nil)
-              (when-not (.isResumable cont)
-                (when (= out-val current)
-                  (set! done true)))
-              current)
-          (do (set! done true)
-              current)))))
+      (if-not wait-until
+        (let [current out-val]
+          (if (.isResumable cont)
+            (do (.resume this nil)
+                (when-not (.isResumable cont)
+                  (when (= out-val current)
+                    (set! done true)))
+                current)
+            (do (set! done true)
+                current)))
+        (let [wu (long wait-until)]
+          (if (neg? wu)
+            (do (set! wait-until (+ (System/nanoTime) (- wu)))
+                ::waiting)
+            (if (> wu (System/nanoTime))
+              ::waiting
+              (let [_ (set! wait-until nil)
+                    current out-val]
+                (if (.isResumable cont)
+                  (do (.resume this nil)
+                      (when-not (.isResumable cont)
+                        (when (= out-val current)
+                          (set! done true)))
+                      current)
+                  (do (set! done true)
+                      current)))))))))
   (invoke [this v]
     (if done
       out-val
-      (let [current out-val]
-        (if (.isResumable cont)
-          (do (.resume this v)
-              (when-not (.isResumable cont)
-                (when (= out-val current)
-                  (set! done true)))
-              current)
-          (do (set! done true)
-              current))))))
+      (if-not wait-until
+        (let [current out-val]
+          (if (.isResumable cont)
+            (do (.resume this v)
+                (when-not (.isResumable cont)
+                  (when (= out-val current)
+                    (set! done true)))
+                current)
+            (do (set! done true)
+                current)))
+        (let [wu (long wait-until)]
+          (if (neg? wu)
+            (do (set! wait-until (+ (System/nanoTime) (- wu)))
+                ::waiting)
+            (if (> wu (System/nanoTime))
+              ::waiting
+              (let [_ (set! wait-until nil)
+                    current out-val]
+                (if (.isResumable cont)
+                  (do (.resume this v)
+                      (when-not (.isResumable cont)
+                        (when (= out-val current)
+                          (set! done true)))
+                      current)
+                  (do (set! done true)
+                      current))))))))))
 
 (defn yield
   "Yields a value from inside a coroutine. Suspends execution and returns
@@ -186,8 +225,6 @@
           x))
       form)))
 
-; ⬇️ API STARTS HERE ⬇️
-
 (defn coroutine
   "Returns a coroutine generator from a function f. Call the generator with
    arguments to create a coroutine instance. The coroutine auto-starts,
@@ -201,7 +238,7 @@
    (finished? co)  ;=> true"
   [f]
   (fn [& args]
-    (let [^ICoroutine co (Coroutine. nil nil nil nil false)
+    (let [^ICoroutine co (Coroutine. nil nil nil nil false nil)
           cont (Continuation/create
                  (fn [cap]
                    (.setCap co cap)
@@ -211,6 +248,8 @@
       (.set -active co)
       (.resume cont)
       co)))
+
+; ⬇️ API STARTS HERE ⬇️
 
 (defn race
   "Takes coroutine generators and returns a race. Each call pumps all
@@ -228,6 +267,22 @@
   [& generators]
   (let [instances (mapv #(%) generators)]
     (Sync. instances (object-array (count instances)) (count instances) false)))
+
+(defn wait
+  "Pauses the coroutine. With no arguments, waits for exactly one pump
+   (returns ::waiting once, then resumes). With a seconds argument, each
+   pump during the wait period returns ::waiting. Once the deadline passes,
+   the next pump resumes normally."
+  ([]
+   (let [^ICoroutine co (.get -active)]
+     (.suspend co ::waiting)
+     nil))
+  ([seconds]
+   (let [^ICoroutine co (.get -active)
+         duration (- (long (* seconds 1e9)))]
+     (.setWaitUntil co duration)
+     (.suspend co ::waiting)
+     nil)))
 
 (defn finished?
   "Returns true if the coroutine has completed."

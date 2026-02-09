@@ -1,7 +1,8 @@
 (ns coroutine-test
   (:refer-clojure :exclude [sync])
   (:require [clojure.test :refer [deftest is testing]]
-            [coroutine :refer [coroutine return return-final finished? race sync]]))
+            [coroutine :refer [coroutine return return-final finished? race sync wait]]
+            [let-mut :refer [let-mut]]))
 
 (deftest generator-returns-fn
   (is (fn? (coroutine (fn [x] x)))))
@@ -425,5 +426,65 @@
       (is (finished? co))
       (is (= 50 (co))))))
 
+(deftest wait-no-arg-waits-one-pump
+  (testing "(wait) with no args returns ::coroutine/waiting for exactly one pump"
+    (let [co-gen (coroutine (fn []
+                              (return :a)
+                              (wait)
+                              (return :b)
+                              :done))
+          co     (co-gen)]
+      (is (= :a (co)))                   ; returns :a, advances to (wait)
+      (is (= :coroutine/waiting (co)))   ; returns ::waiting, advances past wait
+      (is (= :b (co)))                   ; returns :b
+      (is (= :done (co)))
+      (is (finished? co)))))
 
+(deftest wait-returns-waiting-then-continues
+  (testing "pumping during wait returns ::coroutine/waiting, then resumes"
+    (let [co-gen (coroutine (fn []
+                              (return :before)
+                              (wait 0.1)
+                              (return :after)
+                              :done))
+          co     (co-gen)]
+      (is (= :before (co)))              ; returns :before, advances to wait
+      (is (= :coroutine/waiting (co)))   ; wait just started, deadline not passed
+      ;; sleep past the deadline
+      (Thread/sleep 150)
+      (is (= :coroutine/waiting (co)))   ; clears wait, resumes → yields :after, returns ::waiting from the suspend
+      (is (= :after (co)))               ; returns :after
+      (is (= :done (co)))
+      (is (finished? co)))))
 
+(deftest wait-with-zero-seconds
+  (testing "wait with 0 seconds passes through immediately"
+    (let [co-gen (coroutine (fn []
+                              (return :a)
+                              (wait 0)
+                              (return :b)
+                              :done))
+          co     (co-gen)]
+      (is (= :a (co)))                   ; returns :a, advances to wait(0)
+      (is (= :coroutine/waiting (co)))   ; deadline already passed, clears wait, resumes → yields :b
+      (is (= :b (co)))                   ; returns :b
+      (is (= :done (co)))
+      (is (finished? co)))))
+
+(deftest wait-between-returns
+  (testing "wait works correctly between normal returns"
+    (let [co-gen (coroutine (fn []
+                              (return 1)
+                              (return 2)
+                              (wait 0.05)
+                              (return 3)
+                              :end))
+          co     (co-gen)]
+      (is (= 1 (co)))
+      (is (= 2 (co)))                    ; advances to wait
+      (is (= :coroutine/waiting (co)))   ; still waiting
+      (Thread/sleep 100)
+      (is (= :coroutine/waiting (co)))   ; deadline passed, clears wait, resumes → yields 3
+      (is (= 3 (co)))
+      (is (= :end (co)))
+      (is (finished? co)))))
