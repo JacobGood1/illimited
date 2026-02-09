@@ -225,6 +225,8 @@
           x))
       form)))
 
+; ⬇️ API STARTS HERE ⬇️
+
 (defn co-gen
   "Returns a coroutine generator from a function f. Call the generator with
    arguments to create a coroutine instance. The coroutine auto-starts,
@@ -248,8 +250,6 @@
       (.set -active co)
       (.resume cont)
       co)))
-
-; ⬇️ API STARTS HERE ⬇️
 
 (defn race
   "Takes coroutine generators and returns a race. Each call pumps all
@@ -296,7 +296,7 @@
   `(def ~name (co-gen (fn ~args ~@body))))
 
 (defmacro co
-  "Coroutine shorthand using % args, like #() for anonymous fns.
+  "Coroutine generator shorthand using % args, like #() for anonymous fns.
    (co (yield %))          => (co-gen (fn [__gen1] (yield __gen1)))
    (co (+ (yield %1) %2))  => (co-gen (fn [__gen1 __gen2] (+ (yield __gen1) __gen2)))"
   [& body]
@@ -307,7 +307,7 @@
     `(co-gen (fn ~params ~@body))))
 
 (defmacro co-default
-  "Creates a coroutine and immediately invokes it with default values.
+  "Creates a coroutine with default values, not a generator.
    (co-default [a 1 b 2] (+ a b))  => ((co-gen (fn [a b] (+ a b))) 1 2)"
   [bindings & body]
   (let [params   (vec (take-nth 2 bindings))
