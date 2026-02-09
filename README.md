@@ -28,17 +28,17 @@ This resolves the classpath via `clj`, then boots the Espresso JVM with continua
 ## Usage
 
 ```clojure
-(require '[coroutine :refer [coroutine return return-final finished? race sync wait]]
+(require '[coroutine :refer [co-gen return return-final finished? race sync wait]]
          '[let-mut :refer [let-mut]])
 ```
 
 ### Coroutines
 
-`coroutine` returns a generator — a function that creates a new coroutine instance each time it's called:
+`co-gen` returns a generator — a function that creates a new coroutine instance each time it's called:
 
 ```clojure
-(def co-gen (coroutine (fn [x] (return x) (return (* x 2)) (* x 3))))
-(def co (co-gen 5))
+(def my-gen (co-gen (fn [x] (return x) (return (* x 2)) (* x 3))))
+(def co (my-gen 5))
 (co)           ;=> 5
 (co)           ;=> 10
 (co)           ;=> 15
@@ -50,7 +50,7 @@ This resolves the classpath via `clj`, then boots the Espresso JVM with continua
 Pause a coroutine for one pump or for a duration in seconds:
 
 ```clojure
-(def co ((coroutine (fn [] (return :ready) (wait) (return :go) :done))))
+(def co ((co-gen (fn [] (return :ready) (wait) (return :go) :done))))
 (co) ;=> :ready
 (co) ;=> :coroutine/waiting
 (co) ;=> :go
@@ -62,8 +62,8 @@ Pause a coroutine for one pump or for a duration in seconds:
 Pump multiple coroutines in parallel — finishes when the first one completes:
 
 ```clojure
-(def r (race (coroutine (fn [] (return :a) :done-a))
-             (coroutine (fn [] (return :x) (return :y) :done-b))))
+(def r (race (co-gen (fn [] (return :a) :done-a))
+             (co-gen (fn [] (return :x) (return :y) :done-b))))
 (r) ;=> [:a :x]
 (r) ;=> [:done-a]  — first coroutine finished, race ends
 (finished? r) ;=> true
@@ -74,8 +74,8 @@ Pump multiple coroutines in parallel — finishes when the first one completes:
 Pump multiple coroutines in parallel — finishes when all complete:
 
 ```clojure
-(def s (sync (coroutine (fn [] (return 1) :a))
-             (coroutine (fn [] (return 2) (return 3) :b))))
+(def s (sync (co-gen (fn [] (return 1) :a))
+             (co-gen (fn [] (return 2) (return 3) :b))))
 (s) ;=> [1 2]
 (s) ;=> [:a 3]   — first finished, holds :a
 (s) ;=> [:a :b]  — both done
@@ -87,7 +87,7 @@ Pump multiple coroutines in parallel — finishes when all complete:
 `let-mut` provides mutable locals inside coroutine bodies:
 
 ```clojure
-(def co ((coroutine (fn []
+(def co ((co-gen (fn []
                       (let-mut [total 0]
                         (dotimes [_ 3]
                           (set! total (+ total 10))

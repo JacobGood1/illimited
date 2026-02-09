@@ -1,26 +1,26 @@
 (ns coroutine-test
   (:refer-clojure :exclude [sync])
   (:require [clojure.test :refer [deftest is testing]]
-            [coroutine :refer [coroutine return return-final finished? race sync wait]]
+            [coroutine :refer [co-gen return return-final finished? race sync wait]]
             [let-mut :refer [let-mut]]))
 
 (deftest generator-returns-fn
-  (is (fn? (coroutine (fn [x] x)))))
+  (is (fn? (co-gen (fn [x] x)))))
 
 (deftest simple-return-value
-  (let [co-gen (coroutine (fn [x] x))
+  (let [co-gen (co-gen (fn [x] x))
         co     (co-gen 1)]
     (is (= 1 (co)))
     (is (finished? co))))
 
 (deftest multiple-args
-  (let [co-gen (coroutine (fn [a b c] (+ a b c)))
+  (let [co-gen (co-gen (fn [a b c] (+ a b c)))
         co     (co-gen 1 2 3)]
     (is (= 6 (co)))
     (is (finished? co))))
 
 (deftest single-yield
-  (let [co-gen (coroutine (fn [x] (return x) :done))
+  (let [co-gen (co-gen (fn [x] (return x) :done))
         co     (co-gen 42)]
     (is (not (finished? co)))
     (is (= 42 (co)))
@@ -29,7 +29,7 @@
     (is (finished? co))))
 
 (deftest multiple-yields
-  (let [co-gen (coroutine (fn [x]
+  (let [co-gen (co-gen (fn [x]
                             (return x)
                             (return (* x 2))
                             (* x 3)))
@@ -40,7 +40,7 @@
     (is (finished? co))))
 
 (deftest yield-different-types
-  (let [co-gen (coroutine (fn []
+  (let [co-gen (co-gen (fn []
                             (return :keyword)
                             (return "string")
                             (return [1 2 3])
@@ -53,13 +53,13 @@
     (is (finished? co))))
 
 (deftest yield-nil
-  (let [co-gen (coroutine (fn [] (return nil) :done))
+  (let [co-gen (co-gen (fn [] (return nil) :done))
         co     (co-gen)]
     (is (nil? (co)))
     (is (= :done (co)))))
 
 (deftest finished-returns-last-value
-  (let [co-gen (coroutine (fn [] (return 1) :final))
+  (let [co-gen (co-gen (fn [] (return 1) :final))
         co     (co-gen)]
     (co)
     (co)
@@ -69,7 +69,7 @@
 
 (deftest send-value-into-coroutine
   (testing "calling with a value becomes the return of yield"
-    (let [co-gen (coroutine (fn []
+    (let [co-gen (co-gen (fn []
                               (let [v (return :ready)]
                                 (return v)
                                 :done)))
@@ -81,7 +81,7 @@
       (is (finished? co)))))
 
 (deftest ping-pong
-  (let [co-gen (coroutine (fn []
+  (let [co-gen (co-gen (fn []
                             (let [a (return 1)
                                   b (return (+ a 10))]
                               (+ b 100))))
@@ -93,7 +93,7 @@
     (is (finished? co))))
 
 (deftest zero-arg-generator
-  (let [co-gen (coroutine (fn [] (return :a) (return :b) :c))
+  (let [co-gen (co-gen (fn [] (return :a) (return :b) :c))
         co     (co-gen)]
     (is (= :a (co)))
     (is (= :b (co)))
@@ -101,7 +101,7 @@
 
 (deftest independent-instances
   (testing "two instances from the same generator are independent"
-    (let [co-gen (coroutine (fn [x] (return x) (return (* x 2))))
+    (let [co-gen (co-gen (fn [x] (return x) (return (* x 2))))
           co1    (co-gen 10)
           co2    (co-gen 20)]
       (is (= 10 (co1)))
@@ -110,7 +110,7 @@
       (is (= 40 (co2))))))
 
 (deftest accumulator
-  (let [co-gen (coroutine (fn []
+  (let [co-gen (co-gen (fn []
                             (loop [sum 0]
                               (let [v (return sum)]
                                 (if (= v :stop)
@@ -123,7 +123,7 @@
     (is (finished? co))))
 
 (deftest many-yields
-  (let [co-gen (coroutine (fn [n]
+  (let [co-gen (co-gen (fn [n]
                             (dotimes [i n]
                               (return i))
                             :done))
@@ -134,16 +134,16 @@
 
 (deftest race-basic
   (testing "collects yields from all coroutines each round"
-    (let [co1 (coroutine (fn [] (return :a) (return :b) :done1))
-          co2 (coroutine (fn [] (return :x) (return :y) :done2))
+    (let [co1 (co-gen (fn [] (return :a) (return :b) :done1))
+          co2 (co-gen (fn [] (return :x) (return :y) :done2))
           r   (race co1 co2)]
       (is (= [:a :x] (r)))
       (is (= [:b :y] (r)))
       (is (not (finished? r)))))
 
   (testing "race finishes when any coroutine finishes"
-    (let [co1 (coroutine (fn [] (while true (return 1))))
-          co2 (coroutine (fn [] (return 1) :done))
+    (let [co1 (co-gen (fn [] (while true (return 1))))
+          co2 (co-gen (fn [] (return 1) :done))
           r   (race co1 co2)]
       (is (= [1 1] (r)))
       (is (not (finished? r)))
@@ -153,8 +153,8 @@
 (deftest race-first-finishes-stops-remaining
   (testing "when first coroutine finishes, later ones are not pumped"
     (let [calls (atom 0)
-          co1   (coroutine (fn [] (return :a) :done))
-          co2   (coroutine (fn [] (swap! calls inc) (return :x)
+          co1   (co-gen (fn [] (return :a) :done))
+          co2   (co-gen (fn [] (swap! calls inc) (return :x)
                                   (swap! calls inc) (return :y)))
           r     (race co1 co2)]
       (is (= [:a :x] (r)))
@@ -166,9 +166,9 @@
 
 (deftest race-last-finishes
   (testing "when the last coroutine finishes, result includes all values"
-    (let [co1 (coroutine (fn [] (while true (return :a))))
-          co2 (coroutine (fn [] (while true (return :b))))
-          co3 (coroutine (fn [] (return :c) :done))
+    (let [co1 (co-gen (fn [] (while true (return :a))))
+          co2 (co-gen (fn [] (while true (return :b))))
+          co3 (co-gen (fn [] (return :c) :done))
           r   (race co1 co2 co3)]
       (is (= [:a :b :c] (r)))
       (is (not (finished? r)))
@@ -178,9 +178,9 @@
 (deftest race-middle-finishes
   (testing "when a middle coroutine finishes, later ones are not pumped"
     (let [calls (atom 0)
-          co1   (coroutine (fn [] (while true (return :a))))
-          co2   (coroutine (fn [] (return :b) :done))
-          co3   (coroutine (fn [] (swap! calls inc) (return :c)
+          co1   (co-gen (fn [] (while true (return :a))))
+          co2   (co-gen (fn [] (return :b) :done))
+          co3   (co-gen (fn [] (swap! calls inc) (return :c)
                                   (swap! calls inc) (return :d)))
           r     (race co1 co2 co3)]
       (is (= [:a :b :c] (r)))
@@ -192,15 +192,15 @@
 
 (deftest race-immediate-finish
   (testing "coroutine that returns without yielding finishes on first pump"
-    (let [co1 (coroutine (fn [] :immediate))
-          co2 (coroutine (fn [] (return :x) :done))
+    (let [co1 (co-gen (fn [] :immediate))
+          co2 (co-gen (fn [] (return :x) :done))
           r   (race co1 co2)]
       (is (= [:immediate] (r)))
       (is (finished? r)))))
 
 (deftest race-finished-returns-cached-result
   (testing "calling a finished race returns the last result repeatedly"
-    (let [co1 (coroutine (fn [] (return 1) :done))
+    (let [co1 (co-gen (fn [] (return 1) :done))
           r   (race co1)]
       (r)
       (r)
@@ -211,7 +211,7 @@
 
 (deftest race-single-coroutine
   (testing "race with a single coroutine"
-    (let [co (coroutine (fn [] (return 1) (return 2) :done))
+    (let [co (co-gen (fn [] (return 1) (return 2) :done))
           r  (race co)]
       (is (= [1] (r)))
       (is (= [2] (r)))
@@ -221,10 +221,10 @@
 
 (deftest race-many-coroutines
   (testing "race with many participants"
-    (let [co1 (coroutine (fn [] (return :a1) (return :a2) :a-done))
-          co2 (coroutine (fn [] (return :b1) (return :b2) :b-done))
-          co3 (coroutine (fn [] (return :c1) (return :c2) :c-done))
-          co4 (coroutine (fn [] (return :d1) (return :d2) :d-done))
+    (let [co1 (co-gen (fn [] (return :a1) (return :a2) :a-done))
+          co2 (co-gen (fn [] (return :b1) (return :b2) :b-done))
+          co3 (co-gen (fn [] (return :c1) (return :c2) :c-done))
+          co4 (co-gen (fn [] (return :d1) (return :d2) :d-done))
           r   (race co1 co2 co3 co4)]
       (is (= [:a1 :b1 :c1 :d1] (r)))
       (is (= [:a2 :b2 :c2 :d2] (r)))
@@ -234,8 +234,8 @@
 
 (deftest race-finished?-tracking
   (testing "finished? is false before any coroutine finishes"
-    (let [co1 (coroutine (fn [] (return 1) (return 2) :done))
-          co2 (coroutine (fn [] (return 3) (return 4) :done))
+    (let [co1 (co-gen (fn [] (return 1) (return 2) :done))
+          co2 (co-gen (fn [] (return 3) (return 4) :done))
           r   (race co1 co2)]
       (is (not (finished? r)))
       (r)
@@ -246,8 +246,8 @@
       (is (finished? r)))))
 
 (deftest sync-generic-test
-  (let [co1 (coroutine (fn [] (return 1)))
-        co2 (coroutine (fn [] (return 3) (return 4) :done))
+  (let [co1 (co-gen (fn [] (return 1)))
+        co2 (co-gen (fn [] (return 3) (return 4) :done))
         s   (sync co1 co2)]
     (is (= [1 3] (s)))
     (is (not (finished? s)))
@@ -258,7 +258,7 @@
 
 (deftest sync-single-coroutine
   (testing "sync with one coroutine behaves like calling the coroutine"
-    (let [co (coroutine (fn [] (return :a) (return :b) :done))
+    (let [co (co-gen (fn [] (return :a) (return :b) :done))
           s  (sync co)]
       (is (= [:a] (s)))
       (is (= [:b] (s)))
@@ -268,9 +268,9 @@
 
 (deftest sync-all-same-length
   (testing "all coroutines finish on the same round"
-    (let [co1 (coroutine (fn [] (return 1) :a))
-          co2 (coroutine (fn [] (return 2) :b))
-          co3 (coroutine (fn [] (return 3) :c))
+    (let [co1 (co-gen (fn [] (return 1) :a))
+          co2 (co-gen (fn [] (return 2) :b))
+          co3 (co-gen (fn [] (return 3) :c))
           s   (sync co1 co2 co3)]
       (is (= [1 2 3] (s)))
       (is (not (finished? s)))
@@ -279,8 +279,8 @@
 
 (deftest sync-early-finisher-holds-value
   (testing "coroutine that finishes early holds its last yielded value"
-    (let [co1 (coroutine (fn [] (return :x)))
-          co2 (coroutine (fn [] (return :a) (return :b) (return :c) :done))
+    (let [co1 (co-gen (fn [] (return :x)))
+          co2 (co-gen (fn [] (return :a) (return :b) (return :c) :done))
           s   (sync co1 co2)]
       (is (= [:x :a] (s)))
       ;; co1 finishes here (return s nil), value stays :x
@@ -293,9 +293,9 @@
 
 (deftest sync-multiple-early-finishers
   (testing "multiple coroutines finish at different times"
-    (let [co1 (coroutine (fn [] (return 1)))
-          co2 (coroutine (fn [] (return 2) (return 22)))
-          co3 (coroutine (fn [] (return 3) (return 33) (return 333) :end))
+    (let [co1 (co-gen (fn [] (return 1)))
+          co2 (co-gen (fn [] (return 2) (return 22)))
+          co3 (co-gen (fn [] (return 3) (return 33) (return 333) :end))
           s   (sync co1 co2 co3)]
       (is (= [1 2 3] (s)))
       ;; co1 finishes
@@ -309,7 +309,7 @@
 
 (deftest sync-finished-returns-cached-result
   (testing "calling a finished sync returns the last result"
-    (let [co1 (coroutine (fn [] (return 1) :done))
+    (let [co1 (co-gen (fn [] (return 1) :done))
           s   (sync co1)]
       (s)
       (s)
@@ -319,8 +319,8 @@
 
 (deftest sync-finished?-tracking
   (testing "finished? transitions correctly"
-    (let [co1 (coroutine (fn [] (return 1) :a))
-          co2 (coroutine (fn [] (return 2) :b))
+    (let [co1 (co-gen (fn [] (return 1) :a))
+          co2 (co-gen (fn [] (return 2) :b))
           s   (sync co1 co2)]
       (is (not (finished? s)))
       (s)
@@ -330,8 +330,8 @@
 
 (deftest sync-immediate-finish
   (testing "coroutine that returns without yielding"
-    (let [co1 (coroutine (fn [] :immediate))
-          co2 (coroutine (fn [] (return :a) :done))
+    (let [co1 (co-gen (fn [] :immediate))
+          co2 (co-gen (fn [] (return :a) :done))
           s   (sync co1 co2)]
       ;; co1 finishes immediately with :immediate, co2 yields :a
       (is (= [:immediate :a] (s)))
@@ -341,10 +341,10 @@
 
 (deftest sync-many-coroutines
   (testing "sync with many participants"
-    (let [co1 (coroutine (fn [] (return :a1) (return :a2) :a))
-          co2 (coroutine (fn [] (return :b1) (return :b2) :b))
-          co3 (coroutine (fn [] (return :c1) (return :c2) :c))
-          co4 (coroutine (fn [] (return :d1) (return :d2) :d))
+    (let [co1 (co-gen (fn [] (return :a1) (return :a2) :a))
+          co2 (co-gen (fn [] (return :b1) (return :b2) :b))
+          co3 (co-gen (fn [] (return :c1) (return :c2) :c))
+          co4 (co-gen (fn [] (return :d1) (return :d2) :d))
           s   (sync co1 co2 co3 co4)]
       (is (= [:a1 :b1 :c1 :d1] (s)))
       (is (= [:a2 :b2 :c2 :d2] (s)))
@@ -355,9 +355,9 @@
 (deftest sync-does-not-pump-finished-coroutines
   (testing "finished coroutines are not pumped again"
     (let [calls (atom 0)
-          co1   (coroutine (fn [] (return (swap! calls inc))
+          co1   (co-gen (fn [] (return (swap! calls inc))
                                   (return (swap! calls inc))))
-          co2   (coroutine (fn [] (return :x) (return :y) (return :z) :done))
+          co2   (co-gen (fn [] (return :x) (return :y) (return :z) :done))
           s     (sync co1 co2)]
       (s)
       (is (= 2 @calls))      ; auto-start ran first swap!, first pump ran second
@@ -372,7 +372,7 @@
 
 (deftest sync-explicit-return-value-used
   (testing "non-nil return value appears in results on finishing round"
-    (let [co1 (coroutine (fn [] (return 1) (return 2) :final))
+    (let [co1 (co-gen (fn [] (return 1) (return 2) :final))
           s   (sync co1)]
       (is (= [1] (s)))
       (is (= [2] (s)))
@@ -382,7 +382,7 @@
 (deftest thread-safety
   (testing "coroutines on different threads do not interfere"
     (let [results (pmap (fn [x]
-                          (let [co-gen (coroutine (fn [n]
+                          (let [co-gen (co-gen (fn [n]
                                                     (return n)
                                                     (return (* n 2))
                                                     (* n 3)))
@@ -396,7 +396,7 @@
 
 (deftest return-final-terminates-immediately
   (testing "return-final sets permanent value and marks finished"
-    (let [co-gen (coroutine (fn []
+    (let [co-gen (co-gen (fn []
                               (return 1)
                               (return-final 42)
                               (return 2)
@@ -409,7 +409,7 @@
 
 (deftest return-final-without-prior-yields
   (testing "return-final as first action"
-    (let [co-gen (coroutine (fn [] (return-final :instant)))
+    (let [co-gen (co-gen (fn [] (return-final :instant)))
           co     (co-gen)]
       (is (= :instant (co)))
       (is (finished? co))
@@ -417,7 +417,7 @@
 
 (deftest return-final-with-send-value
   (testing "return-final based on received value"
-    (let [co-gen (coroutine (fn []
+    (let [co-gen (co-gen (fn []
                               (let [v (return :waiting)]
                                 (return-final (* v 10)))))
           co     (co-gen)]
@@ -428,7 +428,7 @@
 
 (deftest wait-no-arg-waits-one-pump
   (testing "(wait) with no args returns ::coroutine/waiting for exactly one pump"
-    (let [co-gen (coroutine (fn []
+    (let [co-gen (co-gen (fn []
                               (return :a)
                               (wait)
                               (return :b)
@@ -442,7 +442,7 @@
 
 (deftest wait-returns-waiting-then-continues
   (testing "pumping during wait returns ::coroutine/waiting, then resumes"
-    (let [co-gen (coroutine (fn []
+    (let [co-gen (co-gen (fn []
                               (return :before)
                               (wait 0.1)
                               (return :after)
@@ -459,7 +459,7 @@
 
 (deftest wait-with-zero-seconds
   (testing "wait with 0 seconds passes through immediately"
-    (let [co-gen (coroutine (fn []
+    (let [co-gen (co-gen (fn []
                               (return :a)
                               (wait 0)
                               (return :b)
@@ -473,7 +473,7 @@
 
 (deftest wait-between-returns
   (testing "wait works correctly between normal returns"
-    (let [co-gen (coroutine (fn []
+    (let [co-gen (co-gen (fn []
                               (return 1)
                               (return 2)
                               (wait 0.05)

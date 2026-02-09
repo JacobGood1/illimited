@@ -3,7 +3,7 @@
   (:import (clojure.lang IFn)
            [org.graalvm.continuations Continuation ContinuationEntryPoint SuspendCapability]))
 
-(declare finished? coroutine)
+(declare finished? co-gen)
 
 (definterface IPumpable
   (resume [v])
@@ -225,14 +225,14 @@
           x))
       form)))
 
-(defn coroutine
+(defn co-gen
   "Returns a coroutine generator from a function f. Call the generator with
    arguments to create a coroutine instance. The coroutine auto-starts,
    running to the first yield (or completion). Each call returns the current
    yielded value and advances to the next. N yields = N calls.
 
-   (def co-gen (coroutine (fn [x] (yield x) (yield (* x 2)))))
-   (def co (co-gen 5))
+   (def my-gen (co-gen (fn [x] (yield x) (yield (* x 2)))))
+   (def co (my-gen 5))
    (co)            ;=> 5
    (co)            ;=> 10
    (finished? co)  ;=> true"
@@ -291,25 +291,25 @@
 
 (defmacro defco
   "Defines a coroutine generator. (defco name [args] body) expands to
-   (def name (coroutine (fn [args] body)))"
+   (def name (co-gen (fn [args] body)))"
   [name args & body]
-  `(def ~name (coroutine (fn ~args ~@body))))
+  `(def ~name (co-gen (fn ~args ~@body))))
 
 (defmacro co
   "Coroutine shorthand using % args, like #() for anonymous fns.
-   (co (yield %))          => (coroutine (fn [__gen1] (yield __gen1)))
-   (co (+ (yield %1) %2))  => (coroutine (fn [__gen1 __gen2] (+ (yield __gen1) __gen2)))"
+   (co (yield %))          => (co-gen (fn [__gen1] (yield __gen1)))
+   (co (+ (yield %1) %2))  => (co-gen (fn [__gen1 __gen2] (+ (yield __gen1) __gen2)))"
   [& body]
   (let [arg-syms  (find-args body)
         has-rest? (contains? arg-syms '%&)
         params    (build-params arg-syms)
         body      (replace-args body params has-rest?)]
-    `(coroutine (fn ~params ~@body))))
+    `(co-gen (fn ~params ~@body))))
 
 (defmacro co-default
   "Creates a coroutine and immediately invokes it with default values.
-   (co-default [a 1 b 2] (+ a b))  => ((coroutine (fn [a b] (+ a b))) 1 2)"
+   (co-default [a 1 b 2] (+ a b))  => ((co-gen (fn [a b] (+ a b))) 1 2)"
   [bindings & body]
   (let [params   (vec (take-nth 2 bindings))
         defaults (vec (take-nth 2 (rest bindings)))]
-    `((coroutine (fn ~params ~@body)) ~@defaults)))
+    `((co-gen (fn ~params ~@body)) ~@defaults)))

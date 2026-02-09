@@ -1,7 +1,7 @@
 (ns integration-test
   (:refer-clojure :exclude [sync])
   (:require [clojure.test :refer [deftest is testing]]
-            [coroutine :refer [coroutine return finished? race sync wait]]
+            [coroutine :refer [co-gen return finished? race sync wait]]
             [let-mut :refer [let-mut]]))
 
 (deftest race-let-mut-wait-combined
@@ -9,7 +9,7 @@
     ;; Two coroutines race: a fast counter (no wait) vs a slow counter
     ;; (wait delays its start by one pump). The fast one finishes first.
     (let [counter (fn [step limit]
-                    (coroutine
+                    (co-gen
                       (fn []
                         (let-mut [total 0]
                           (loop []
@@ -18,7 +18,7 @@
                               total
                               (do (return total) (recur))))))))
           slow-counter (fn [step limit]
-                         (coroutine
+                         (co-gen
                            (fn []
                              (let-mut [total 0]
                                (wait)
@@ -45,7 +45,7 @@
   (testing "coroutines sharing a pattern: accumulate, wait, then finish"
     (let [;; accumulates values, waits between phases, returns final sum
           phased (fn [phase1-vals phase2-vals]
-                   (coroutine
+                   (co-gen
                      (fn []
                        (let-mut [sum 0]
                          ;; phase 1: accumulate and yield each step
