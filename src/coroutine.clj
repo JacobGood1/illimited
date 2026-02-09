@@ -1,6 +1,7 @@
 (ns coroutine
   (:refer-clojure :exclude [sync])
-  (:import [org.graalvm.continuations Continuation ContinuationEntryPoint SuspendCapability]))
+  (:import (clojure.lang IFn)
+           [org.graalvm.continuations Continuation ContinuationEntryPoint SuspendCapability]))
 
 (definterface IPumpable
   (resume [v])
@@ -49,7 +50,7 @@
     (.set -active this)
     (.resume cont)
     out-val)
-  clojure.lang.IFn
+  IFn
   (invoke [this]
     (if done
       out-val
@@ -92,7 +93,7 @@
   (let [^ICoroutine co (.get -active)]
     (.setOut co v)
     (.markDone co)
-    (.suspend (.getCap co))))
+    (.suspend ^SuspendCapability (.getCap co))))
 
 (defn coroutine
   "Returns a coroutine generator from a function f. Call the generator with
@@ -143,7 +144,7 @@
                 (set! done true)
                 r)
               (recur (inc i) (conj! acc val))))))))
-  clojure.lang.IFn
+  IFn
   (invoke [this]
     (if done result (.resume this nil))))
 
@@ -175,7 +176,7 @@
     (when (zero? remaining)
       (set! done true))
     (vec arr))
-  clojure.lang.IFn
+  IFn
   (invoke [this]
     (if done (vec arr) (.resume this nil))))
 
