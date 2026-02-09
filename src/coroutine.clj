@@ -3,6 +3,8 @@
   (:import (clojure.lang IFn)
            [org.graalvm.continuations Continuation ContinuationEntryPoint SuspendCapability]))
 
+(declare finished? coroutine)
+
 (definterface IPumpable
   (resume [v])
   (getOut [])
@@ -95,35 +97,6 @@
     (.markDone co)
     (.suspend ^SuspendCapability (.getCap co))))
 
-(defn coroutine
-  "Returns a coroutine generator from a function f. Call the generator with
-   arguments to create a coroutine instance. The coroutine auto-starts,
-   running to the first yield (or completion). Each call returns the current
-   yielded value and advances to the next. N yields = N calls.
-
-   (def co-gen (coroutine (fn [x] (yield x) (yield (* x 2)))))
-   (def co (co-gen 5))
-   (co)            ;=> 5
-   (co)            ;=> 10
-   (finished? co)  ;=> true"
-  [f]
-  (fn [& args]
-    (let [^ICoroutine co (Coroutine. nil nil nil nil false)
-          cont (Continuation/create
-                 (fn [cap]
-                   (.setCap co cap)
-                   (.set -active co)
-                   (.setOut co (apply f args))))]
-      (.setCont co cont)
-      (.set -active co)
-      (.resume cont)
-      co)))
-
-(defn finished?
-  "Returns true if the coroutine has completed."
-  [co]
-  (.isFinished ^IPumpable co))
-
 (deftype Race [instances
                ^:unsynchronized-mutable result
                ^:unsynchronized-mutable done]
@@ -148,14 +121,6 @@
   (invoke [this]
     (if done result (.resume this nil))))
 
-(defn race
-  "Takes coroutine generators and returns a race. Each call pumps all
-   coroutines sequentially, collecting results into a vector. The race finishes
-   as soon as any coroutine finishes — remaining coroutines are not pumped."
-  [& generators]
-  (let [instances (mapv #(%) generators)]
-    (Race. instances nil false)))
-
 (deftype Sync [instances
                ^objects arr
                ^:unsynchronized-mutable remaining
@@ -179,21 +144,6 @@
   IFn
   (invoke [this]
     (if done (vec arr) (.resume this nil))))
-
-(defn sync
-  "Takes coroutine generators and returns a sync. Each call pumps all
-   coroutines sequentially, collecting results into a vector. The sync finishes
-   only when ALL coroutines have finished. Finished coroutines hold their last
-   non-nil value."
-  [& generators]
-  (let [instances (mapv #(%) generators)]
-    (Sync. instances (object-array (count instances)) (count instances) false)))
-
-(defmacro defco
-  "Defines a coroutine generator. (defco name [args] body) expands to
-   (def name (coroutine (fn [args] body)))"
-  [name args & body]
-  `(def ~name (coroutine (fn ~args ~@body))))
 
 (defn- find-args
   "Walks a form and returns the set of %, %1, %2, ... %& symbols."
@@ -235,6 +185,60 @@
           (get replacements x)
           x))
       form)))
+
+; ⬇️ API STARTS HERE ⬇️
+
+(defn coroutine
+  "Returns a coroutine generator from a function f. Call the generator with
+   arguments to create a coroutine instance. The coroutine auto-starts,
+   running to the first yield (or completion). Each call returns the current
+   yielded value and advances to the next. N yields = N calls.
+
+   (def co-gen (coroutine (fn [x] (yield x) (yield (* x 2)))))
+   (def co (co-gen 5))
+   (co)            ;=> 5
+   (co)            ;=> 10
+   (finished? co)  ;=> true"
+  [f]
+  (fn [& args]
+    (let [^ICoroutine co (Coroutine. nil nil nil nil false)
+          cont (Continuation/create
+                 (fn [cap]
+                   (.setCap co cap)
+                   (.set -active co)
+                   (.setOut co (apply f args))))]
+      (.setCont co cont)
+      (.set -active co)
+      (.resume cont)
+      co)))
+
+(defn race
+  "Takes coroutine generators and returns a race. Each call pumps all
+   coroutines sequentially, collecting results into a vector. The race finishes
+   as soon as any coroutine finishes — remaining coroutines are not pumped."
+  [& generators]
+  (let [instances (mapv #(%) generators)]
+    (Race. instances nil false)))
+
+(defn sync
+  "Takes coroutine generators and returns a sync. Each call pumps all
+   coroutines sequentially, collecting results into a vector. The sync finishes
+   only when ALL coroutines have finished. Finished coroutines hold their last
+   non-nil value."
+  [& generators]
+  (let [instances (mapv #(%) generators)]
+    (Sync. instances (object-array (count instances)) (count instances) false)))
+
+(defn finished?
+  "Returns true if the coroutine has completed."
+  [co]
+  (.isFinished ^IPumpable co))
+
+(defmacro defco
+  "Defines a coroutine generator. (defco name [args] body) expands to
+   (def name (coroutine (fn [args] body)))"
+  [name args & body]
+  `(def ~name (coroutine (fn ~args ~@body))))
 
 (defmacro co
   "Coroutine shorthand using % args, like #() for anonymous fns.
