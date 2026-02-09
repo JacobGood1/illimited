@@ -18,14 +18,16 @@
   (setCap [c])
   (getCont ^Continuation [])
   (setCont [c])
-  (^boolean isFinished []))
+  (^boolean isFinished [])
+  (markDone []))
 
-(def ^:private -active (object-array 1))
+(def ^:private ^ThreadLocal -active (ThreadLocal.))
 
 (deftype Coroutine [^:unsynchronized-mutable in-val
                     ^:unsynchronized-mutable out-val
                     ^:unsynchronized-mutable ^SuspendCapability cap
-                    ^:unsynchronized-mutable ^Continuation cont]
+                    ^:unsynchronized-mutable ^Continuation cont
+                    ^:unsynchronized-mutable done]
   IPumpable
   ICoroutine
   (getIn [_] in-val)
@@ -36,56 +38,85 @@
   (setCap [_ c] (set! cap c))
   (getCont [_] cont)
   (setCont [_ c] (set! cont c))
-  (isFinished [_] (not (.isResumable cont)))
+  (isFinished [_] done)
+  (markDone [_] (set! done true))
   (suspend [this v]
     (set! out-val v)
     (.suspend cap)
-    in-val)
+    (if (nil? in-val) v in-val))
   (resume [this v]
     (set! in-val v)
-    (aset ^objects -active 0 this)
+    (.set -active this)
     (.resume cont)
-    out-val))
+    out-val)
+  clojure.lang.IFn
+  (invoke [this]
+    (if done
+      out-val
+      (let [current out-val]
+        (if (.isResumable cont)
+          (do (.resume this nil)
+              (when-not (.isResumable cont)
+                (when (= out-val current)
+                  (set! done true)))
+              current)
+          (do (set! done true)
+              current)))))
+  (invoke [this v]
+    (if done
+      out-val
+      (let [current out-val]
+        (if (.isResumable cont)
+          (do (.resume this v)
+              (when-not (.isResumable cont)
+                (when (= out-val current)
+                  (set! done true)))
+              current)
+          (do (set! done true)
+              current))))))
 
 (defn yield
   "Yields a value from inside a coroutine. Suspends execution and returns
-   the value passed to the next call to next!."
+   the value passed to the next call."
   [v]
-  (.suspend ^ICoroutine (aget ^objects -active 0) v))
+  (.suspend ^ICoroutine (.get -active) v))
+
+(def return
+  "Alias for yield."
+  yield)
+
+(defn return-final
+  "Terminates the coroutine immediately with a permanent value.
+   All future calls to the coroutine will return this value."
+  [v]
+  (let [^ICoroutine co (.get -active)]
+    (.setOut co v)
+    (.markDone co)
+    (.suspend (.getCap co))))
 
 (defn coroutine
   "Returns a coroutine generator from a function f. Call the generator with
-   arguments to create a coroutine instance. f may call yield to suspend
-   and produce values. The return value of f becomes the final value.
+   arguments to create a coroutine instance. The coroutine auto-starts,
+   running to the first yield (or completion). Each call returns the current
+   yielded value and advances to the next. N yields = N calls.
 
    (def co-gen (coroutine (fn [x] (yield x) (yield (* x 2)))))
    (def co (co-gen 5))
-   (next! co)      ;=> 5
-   (next! co)      ;=> 10
-   (finished? co)  ;=> false
-   (next! co)      ;=> 10  (return value of last yield)
+   (co)            ;=> 5
+   (co)            ;=> 10
    (finished? co)  ;=> true"
   [f]
   (fn [& args]
-    (let [^ICoroutine co (Coroutine. nil nil nil nil)
+    (let [^ICoroutine co (Coroutine. nil nil nil nil false)
           cont (Continuation/create
                  (fn [cap]
                    (.setCap co cap)
-                   (aset ^objects -active 0 co)
+                   (.set -active co)
                    (.setOut co (apply f args))))]
       (.setCont co cont)
+      (.set -active co)
+      (.resume cont)
       co)))
-
-(defn next!
-  "Resumes the coroutine, passing val as the return value of yield (or as the
-   argument to f on the first call). Returns the yielded or final value.
-   After the coroutine finishes, always returns the last value."
-  ([co] (next! co nil))
-  ([co val]
-   (let [^IPumpable co co]
-     (if (.isFinished co)
-       (.getOut co)
-       (.resume co val)))))
 
 (defn finished?
   "Returns true if the coroutine has completed."
@@ -105,16 +136,19 @@
           (let [r (persistent! acc)]
             (set! result r) r)
           (let [co  (nth instances i)
-                val (next! co)]
+                val (co)]
             (if (finished? co)
               (let [r (persistent! (conj! acc val))]
                 (set! result r)
                 (set! done true)
                 r)
-              (recur (inc i) (conj! acc val)))))))))
+              (recur (inc i) (conj! acc val))))))))
+  clojure.lang.IFn
+  (invoke [this]
+    (if done result (.resume this nil))))
 
 (defn race
-  "Takes coroutine generators and returns a race. Each next! call pumps all
+  "Takes coroutine generators and returns a race. Each call pumps all
    coroutines sequentially, collecting results into a vector. The race finishes
    as soon as any coroutine finishes — remaining coroutines are not pumped."
   [& generators]
@@ -132,7 +166,7 @@
     (dotimes [i (alength arr)]
       (let [co (nth instances i)]
         (when-not (finished? co)
-          (let [val (next! co)]
+          (let [val (co)]
             (if (finished? co)
               (do (set! remaining (dec remaining))
                   (when-not (nil? val)
@@ -140,10 +174,13 @@
               (aset arr i val))))))
     (when (zero? remaining)
       (set! done true))
-    (vec arr)))
+    (vec arr))
+  clojure.lang.IFn
+  (invoke [this]
+    (if done (vec arr) (.resume this nil))))
 
 (defn sync
-  "Takes coroutine generators and returns a sync. Each next! call pumps all
+  "Takes coroutine generators and returns a sync. Each call pumps all
    coroutines sequentially, collecting results into a vector. The sync finishes
    only when ALL coroutines have finished. Finished coroutines hold their last
    non-nil value."
@@ -198,13 +235,21 @@
           x))
       form)))
 
-(defmacro co*
+(defmacro co
   "Coroutine shorthand using % args, like #() for anonymous fns.
-   (co* (yield %))          => (coroutine (fn [__gen1] (yield __gen1)))
-   (co* (+ (yield %1) %2))  => (coroutine (fn [__gen1 __gen2] (+ (yield __gen1) __gen2)))"
+   (co (yield %))          => (coroutine (fn [__gen1] (yield __gen1)))
+   (co (+ (yield %1) %2))  => (coroutine (fn [__gen1 __gen2] (+ (yield __gen1) __gen2)))"
   [& body]
   (let [arg-syms  (find-args body)
         has-rest? (contains? arg-syms '%&)
         params    (build-params arg-syms)
         body      (replace-args body params has-rest?)]
     `(coroutine (fn ~params ~@body))))
+
+(defmacro co-default
+  "Creates a coroutine and immediately invokes it with default values.
+   (co-default [a 1 b 2] (+ a b))  => ((coroutine (fn [a b] (+ a b))) 1 2)"
+  [bindings & body]
+  (let [params   (vec (take-nth 2 bindings))
+        defaults (vec (take-nth 2 (rest bindings)))]
+    `((coroutine (fn ~params ~@body)) ~@defaults)))
