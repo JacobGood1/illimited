@@ -4,7 +4,7 @@ Illimited continuations for Clojure, powered by GraalVM Espresso.
 
 ## Prerequisites
 
-- [GraalVM Espresso JDK](https://www.graalvm.org/jdk21/reference-manual/java-on-truffle/) (tested with 25.0.2)
+- [GraalVM Espresso JDK](https://www.graalvm.org/latest/reference-manual/espresso/) (tested with 25.0.2)
 - [Clojure CLI](https://clojure.org/guides/install_clojure) (`clj`)
 
 Espresso provides Java-on-Truffle with delimited continuation support, which is what makes coroutines possible.
